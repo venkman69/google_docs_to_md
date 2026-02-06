@@ -13,7 +13,6 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import markdownify
-
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +67,8 @@ def get_service():
 def backup_file(filepath, dry_run=False):
     if os.path.exists(filepath):
         backup_path = filepath + '.bak'
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
         if not dry_run:
             shutil.copy2(filepath, backup_path)
         logging.info(f"Backed up {filepath} to {backup_path}" + (" (Dry Run)" if dry_run else ""))
@@ -78,7 +79,8 @@ def convert_to_markdown(service, file_id, file_name, output_dir, dry_run=False):
             # Simulate conversion
             safe_filename = "".join([c for c in file_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
             output_path = os.path.join(output_dir, f"{safe_filename}.md")
-            logging.info(f"Would convert {file_name} to markdown at {output_path} (Dry Run)")
+            pdf_path = os.path.join(output_dir, f"{safe_filename}.pdf")
+            logging.info(f"Would convert {file_name} to markdown at {output_path} and PDF at {pdf_path} (Dry Run)")
             return True
 
         # Export Google Doc as HTML
@@ -92,15 +94,29 @@ def convert_to_markdown(service, file_id, file_name, output_dir, dry_run=False):
         html_content = fh.getvalue().decode('utf-8')
         md_content = markdownify.mdownify(html_content, heading_style="ATX")
         
+        # Export Google Doc as PDF
+        request_pdf = service.files().export_media(fileId=file_id, mimeType='application/pdf')
+        fh_pdf = io.BytesIO()
+        downloader_pdf = MediaIoBaseDownload(fh_pdf, request_pdf)
+        done_pdf = False
+        while done_pdf is False:
+            status, done_pdf = downloader_pdf.next_chunk()
+
         # Sanitize filename
         safe_filename = "".join([c for c in file_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
         output_path = os.path.join(output_dir, f"{safe_filename}.md")
-        
-        backup_file(output_path, dry_run=dry_run)
+        pdf_path = os.path.join(output_dir, f"{safe_filename}.pdf")
+        # let google versioning handle the backup and restore
+        # backup_file(output_path, dry_run=dry_run)
+        # backup_file(pdf_path, dry_run=dry_run)
         
         with open(output_path, 'w') as f:
             f.write(md_content)
-        logging.info(f"Converted {file_name} to markdown at {output_path}")
+
+        with open(pdf_path, 'wb') as f:
+            f.write(fh_pdf.getvalue())
+
+        logging.info(f"Converted {file_name} to markdown at {output_path} and PDF at {pdf_path}")
         return True
     except Exception as e:
         logging.error(f"Failed to convert {file_name}: {e}")

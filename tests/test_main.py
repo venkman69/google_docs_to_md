@@ -118,8 +118,8 @@ def test_main_workflow(mock_config, mock_state, tmp_path):
         # Mock Download (Export)
         mock_downloader_instance = MagicMock()
         mock_downloader_cls.return_value = mock_downloader_instance
-        # We expect 3 conversions total
-        mock_downloader_instance.next_chunk.side_effect = [(None, True)] * 3
+        # We expect 3 conversions total (html + pdf for each = 6 downloads)
+        mock_downloader_instance.next_chunk.side_effect = [(None, True)] * 6
         
         # Mock io.BytesIO
         mock_buffer = MagicMock()
@@ -129,16 +129,19 @@ def test_main_workflow(mock_config, mock_state, tmp_path):
         # Run main
         main.main(dry_run=False)
         
-        # Verify export called for 3 files
-        assert mock_files.export_media.call_count == 3
+        # Verify export called for 3 files (2 calls per file)
+        assert mock_files.export_media.call_count == 6
         
         # Verify files created
         output_dir_1 = tmp_path / 'downloads' / 'Test Folder'
         assert (output_dir_1 / 'Doc 1.md').exists()
+        assert (output_dir_1 / 'Doc 1.pdf').exists()
         assert (output_dir_1 / 'Doc 2.md').exists()
+        assert (output_dir_1 / 'Doc 2.pdf').exists()
         
         output_dir_2 = tmp_path / 'downloads' / 'Folder'
         assert (output_dir_2 / 'Doc 3.md').exists()
+        assert (output_dir_2 / 'Doc 3.pdf').exists()
         
         # Verify state updated
         with open(mock_state, 'r') as f:
@@ -213,25 +216,24 @@ def test_main_workflow_custom_path_recursive(mock_state, tmp_path):
         # Mock Download
         mock_downloader_instance = MagicMock()
         mock_downloader_cls.return_value = mock_downloader_instance
-        mock_downloader_instance.next_chunk.side_effect = [(None, True)] * 2
+        mock_downloader_instance.next_chunk.side_effect = [(None, True)] * 4
         
-        # Mock io
+        # Mock io.BytesIO
         mock_buffer = MagicMock()
-        mock_buffer.getvalue.return_value = b"<h1>Title</h1>"
+        mock_buffer.getvalue.return_value = b"<h1>Title</h1><p>Content</p>"
         mock_io_cls.return_value = mock_buffer
         
-        # Run
+        # Run main
         main.main(dry_run=False)
         
-        # Verify
-        output_dir = tmp_path / 'custom_output'
-        assert output_dir.exists()
-        assert (output_dir / 'Doc 1.md').exists()
+        # Verify files created
+        output_dir_1 = tmp_path / 'custom_output'
+        assert (output_dir_1 / 'Doc 1.md').exists()
+        assert (output_dir_1 / 'Doc 1.pdf').exists()
         
-        # Verify recursive output
-        sub_dir = output_dir / 'Sub'
-        assert sub_dir.exists()
-        assert (sub_dir / 'Doc 2.md').exists()
+        output_dir_2 = tmp_path / 'custom_output' / 'Sub'
+        assert (output_dir_2 / 'Doc 2.md').exists()
+        assert (output_dir_2 / 'Doc 2.pdf').exists()
 
 def test_dry_run(mock_state, tmp_path):
     # Reuse config setup from fixture manually or mock it

@@ -15,3 +15,6 @@ credentials.json
 state.json
 downloads/
 .pytest_cache/
+
+# Added by ggshield
+.cache_ggshield

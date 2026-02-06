@@ -5,6 +5,7 @@ set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$(dirname "$DIR")"
 
+>&2 echo "PROJECT ROOT: ${PROJECT_ROOT}"
 # Activate virtual environment
 source "$PROJECT_ROOT/.venv/bin/activate"
 
@@ -16,4 +17,4 @@ source "$PROJECT_ROOT/.venv/bin/activate"
 
 export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
-python "$PROJECT_ROOT/src/main.py" "$@"
+uv run "$PROJECT_ROOT/src/main.py" "$@"
