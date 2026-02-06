@@ -1,0 +1,19 @@
+[project]
+name = "gdrive-pdf-exporter"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-api-python-client>=2.189.0",
+    "google-auth-httplib2>=0.3.0",
+    "google-auth-oauthlib>=1.2.4",
+    "markdownify>=1.2.2",
+    "pyyaml>=6.0.3",
+    "typer>=0.21.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
