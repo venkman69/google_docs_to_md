@@ -11,7 +11,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import markdownify
 # Setup logging
 logging.basicConfig(
@@ -24,7 +24,7 @@ logging.basicConfig(
 
 app = typer.Typer()
 
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+SCOPES = ['https://www.googleapis.com/auth/drive']
 CONFIG_FILE = 'config.yaml'
 STATE_FILE = 'state.json'
 TOKEN_FILE = 'token.json'
@@ -73,14 +73,73 @@ def backup_file(filepath, dry_run=False):
             shutil.copy2(filepath, backup_path)
         logging.info(f"Backed up {filepath} to {backup_path}" + (" (Dry Run)" if dry_run else ""))
 
+def upload_file_to_drive(service, file_id, file_name, content, filename_suffix, mime_type, dry_run=False):
+    """Upload a file to Google Drive in the same folder as the original file."""
+    try:
+        # Get the parent folder of the original file
+        file_metadata = service.files().get(fileId=file_id, fields='parents').execute()
+        parents = file_metadata.get('parents', [])
+
+        if not parents:
+            logging.warning(f"No parent folder found for {file_name}, skipping Drive upload")
+            return False
+
+        parent_id = parents[0]
+        filename = f"{file_name}.{filename_suffix}"
+
+        if dry_run:
+            logging.info(f"Would upload {filename} to Google Drive folder {parent_id} (Dry Run)")
+            return True
+
+        # Check if a file with the same name already exists in the parent folder
+        query = f"name = '{filename}' and '{parent_id}' in parents and trashed = false"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        existing_files = results.get('files', [])
+
+        # Prepare file metadata
+        file_metadata = {
+            'name': filename,
+            'parents': [parent_id],
+            'mimeType': mime_type
+        }
+
+        # Prepare media body
+        if mime_type == 'application/pdf':
+            media_body = MediaIoBaseUpload(io.BytesIO(content), mimetype=mime_type)
+        else:
+            media_body = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype=mime_type)
+
+        if existing_files:
+            # Update existing file
+            existing_file_id = existing_files[0]['id']
+            updated_file = service.files().update(
+                fileId=existing_file_id,
+                media_body=media_body,
+                fields='id'
+            ).execute()
+            logging.info(f"Updated existing file in Drive: {filename} (ID: {updated_file.get('id')})")
+        else:
+            # Create new file
+            created_file = service.files().create(
+                body=file_metadata,
+                media_body=media_body,
+                fields='id'
+            ).execute()
+            logging.info(f"Created new file in Drive: {filename} (ID: {created_file.get('id')})")
+
+        return True
+
+    except Exception as e:
+        logging.error(f"Failed to upload {filename_suffix} to Drive for {file_name}: {e}")
+        return False
+
 def convert_to_markdown(service, file_id, file_name, output_dir, dry_run=False):
     try:
         if dry_run:
             # Simulate conversion
-            safe_filename = "".join([c for c in file_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
-            output_path = os.path.join(output_dir, f"{safe_filename}.md")
-            pdf_path = os.path.join(output_dir, f"{safe_filename}.pdf")
-            logging.info(f"Would convert {file_name} to markdown at {output_path} and PDF at {pdf_path} (Dry Run)")
+            logging.info(f"Would convert {file_name} to markdown and PDF (Dry Run)")
+            upload_file_to_drive(service, file_id, file_name, "", "md", "text/markdown", dry_run=True)
+            upload_file_to_drive(service, file_id, file_name, b"", "pdf", "application/pdf", dry_run=True)
             return True
 
         # Export Google Doc as HTML
@@ -89,34 +148,48 @@ def convert_to_markdown(service, file_id, file_name, output_dir, dry_run=False):
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while done is False:
-            status, done = downloader.next_chunk()
+            _, done = downloader.next_chunk()
 
         html_content = fh.getvalue().decode('utf-8')
         md_content = markdownify.mdownify(html_content, heading_style="ATX")
-        
+
         # Export Google Doc as PDF
         request_pdf = service.files().export_media(fileId=file_id, mimeType='application/pdf')
         fh_pdf = io.BytesIO()
         downloader_pdf = MediaIoBaseDownload(fh_pdf, request_pdf)
         done_pdf = False
         while done_pdf is False:
-            status, done_pdf = downloader_pdf.next_chunk()
+            _, done_pdf = downloader_pdf.next_chunk()
 
-        # Sanitize filename
+        pdf_content = fh_pdf.getvalue()
+
+        # Sanitize filename for local fallback
         safe_filename = "".join([c for c in file_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
         output_path = os.path.join(output_dir, f"{safe_filename}.md")
         pdf_path = os.path.join(output_dir, f"{safe_filename}.pdf")
-        # let google versioning handle the backup and restore
-        # backup_file(output_path, dry_run=dry_run)
-        # backup_file(pdf_path, dry_run=dry_run)
-        
-        with open(output_path, 'w') as f:
-            f.write(md_content)
 
-        with open(pdf_path, 'wb') as f:
-            f.write(fh_pdf.getvalue())
+        # Upload both files to Google Drive
+        md_uploaded = upload_file_to_drive(service, file_id, file_name, md_content, "md", "text/markdown", dry_run=dry_run)
+        pdf_uploaded = upload_file_to_drive(service, file_id, file_name, pdf_content, "pdf", "application/pdf", dry_run=dry_run)
 
-        logging.info(f"Converted {file_name} to markdown at {output_path} and PDF at {pdf_path}")
+        # Only save locally if upload failed
+        if not md_uploaded:
+            logging.warning(f"Markdown upload failed, saving locally to {output_path}")
+            os.makedirs(output_dir, exist_ok=True)
+            with open(output_path, 'w') as f:
+                f.write(md_content)
+
+        if not pdf_uploaded:
+            logging.warning(f"PDF upload failed, saving locally to {pdf_path}")
+            os.makedirs(output_dir, exist_ok=True)
+            with open(pdf_path, 'wb') as f:
+                f.write(pdf_content)
+
+        if md_uploaded and pdf_uploaded:
+            logging.info(f"Successfully uploaded {file_name} markdown and PDF to Google Drive")
+        else:
+            logging.info(f"Converted {file_name} (some files saved locally due to upload failures)")
+
         return True
     except Exception as e:
         logging.error(f"Failed to convert {file_name}: {e}")
@@ -163,18 +236,43 @@ def scan_folder(service, folder_id, local_dir, state, dry_run=False):
             file_id = item['id']
             file_name = item['name']
             modified_time = item['modifiedTime']
-            
+
             # Check if changed
             last_recorded_time = state.get(file_id)
-            
-            if last_recorded_time != modified_time:
-                logging.info(f"File {file_name} changed (new: {modified_time}, old: {last_recorded_time}). Converting...")
+
+            # Check if markdown and PDF files exist in Drive
+            file_metadata = service.files().get(fileId=file_id, fields='parents').execute()
+            parents = file_metadata.get('parents', [])
+            need_conversion = False
+
+            if parents:
+                parent_id = parents[0]
+                md_filename = f"{file_name}.md"
+                pdf_filename = f"{file_name}.pdf"
+
+                # Check for markdown file
+                query_md = f"name = '{md_filename}' and '{parent_id}' in parents and trashed = false"
+                results_md = service.files().list(q=query_md, fields="files(id)").execute()
+                md_exists = len(results_md.get('files', [])) > 0
+
+                # Check for PDF file
+                query_pdf = f"name = '{pdf_filename}' and '{parent_id}' in parents and trashed = false"
+                results_pdf = service.files().list(q=query_pdf, fields="files(id)").execute()
+                pdf_exists = len(results_pdf.get('files', [])) > 0
+
+                if not md_exists or not pdf_exists:
+                    logging.info(f"File {file_name} outputs missing (md: {md_exists}, pdf: {pdf_exists}). Converting...")
+                    need_conversion = True
+
+            if last_recorded_time != modified_time or need_conversion:
+                if not need_conversion:
+                    logging.info(f"File {file_name} changed (new: {modified_time}, old: {last_recorded_time}). Converting...")
                 if convert_to_markdown(service, file_id, file_name, local_dir, dry_run=dry_run):
                     if not dry_run:
                         state[file_id] = modified_time
                         save_state(state)
             else:
-                logging.info(f"File {file_name} unchanged.")
+                logging.info(f"File {file_name} unchanged and outputs exist.")
 
         # 2. Process Subfolders (Recursive)
         query_folders = f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
