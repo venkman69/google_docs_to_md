@@ -218,9 +218,9 @@ def resolve_path_to_id(service, path):
         
     return parent_id
 
-def scan_folder(service, folder_id, local_dir, state, dry_run=False):
+def scan_folder(service, folder_id, local_dir, state, dry_run=False, converted_files=None, folder_path=""):
     logging.info(f"Scanning folder ID: {folder_id} -> Local: {local_dir}")
-    
+
     if not dry_run:
         os.makedirs(local_dir, exist_ok=True)
     elif not os.path.exists(local_dir):
@@ -271,6 +271,10 @@ def scan_folder(service, folder_id, local_dir, state, dry_run=False):
                     if not dry_run:
                         state[file_id] = modified_time
                         save_state(state)
+                    if converted_files is not None:
+                        # Store as tuple: (folder_path, filename)
+                        display_path = f"{folder_path}/{file_name}" if folder_path else file_name
+                        converted_files.append((display_path, file_name))
             else:
                 logging.info(f"File {file_name} unchanged and outputs exist.")
 
@@ -282,15 +286,46 @@ def scan_folder(service, folder_id, local_dir, state, dry_run=False):
         for folder in items_folders:
             sub_folder_id = folder['id']
             sub_folder_name = folder['name']
-            
+
             # Sanitize folder name for local path
             safe_folder_name = "".join([c for c in sub_folder_name if c.isalpha() or c.isdigit() or c in (' ', '-', '_')]).strip()
             sub_local_dir = os.path.join(local_dir, safe_folder_name)
-            
-            scan_folder(service, sub_folder_id, sub_local_dir, state, dry_run=dry_run)
+
+            # Build folder path for display
+            sub_folder_path = f"{folder_path}/{sub_folder_name}" if folder_path else sub_folder_name
+
+            scan_folder(service, sub_folder_id, sub_local_dir, state, dry_run=dry_run, converted_files=converted_files, folder_path=sub_folder_path)
             
     except Exception as e:
         logging.error(f"Error scanning folder {folder_id}: {e}")
+
+def print_conversion_report(converted_files, dry_run=False):
+    """Print a summary report of converted documents."""
+    if not converted_files:
+        action = "would be" if dry_run else "were"
+        logging.info(f"\n{'='*60}")
+        logging.info(f"Conversion Report")
+        logging.info(f"{'='*60}")
+        logging.info(f"No documents {action} converted.")
+        logging.info(f"{'='*60}\n")
+        return
+
+    action = "would be" if dry_run else "were"
+    logging.info(f"\n{'='*60}")
+    logging.info(f"Conversion Report")
+    logging.info(f"{'='*60}")
+    logging.info(f"Total documents {action} converted: {len(converted_files)}")
+    logging.info(f"{'-'*60}")
+    for i, item in enumerate(converted_files, 1):
+        if isinstance(item, tuple):
+            # item is (folder_path, filename)
+            folder_path, filename = item
+            logging.info(f"{i}. {filename}")
+            logging.info(f"   Folder: {folder_path}")
+        else:
+            # backward compatibility - item is just filename
+            logging.info(f"{i}. {item}")
+    logging.info(f"{'='*60}\n")
 
 @app.command()
 def main(dry_run: bool = typer.Option(False, "--dry-run", help="Run without making changes")):
@@ -300,9 +335,12 @@ def main(dry_run: bool = typer.Option(False, "--dry-run", help="Run without maki
 
     state = load_state()
     service = get_service()
-    
+
     if not service:
         return
+
+    # Track all converted files across all directories
+    converted_files = []
 
     for directory in config.get('directories', []):
         folder_id = None
@@ -348,7 +386,10 @@ def main(dry_run: bool = typer.Option(False, "--dry-run", help="Run without maki
             local_dir = os.path.join(os.getcwd(), "downloads", folder_name)
         
         # Start recursive scan
-        scan_folder(service, folder_id, local_dir, state, dry_run=dry_run)
+        scan_folder(service, folder_id, local_dir, state, dry_run=dry_run, converted_files=converted_files)
+
+    # Print conversion report at the end
+    print_conversion_report(converted_files, dry_run=dry_run)
 
 if __name__ == '__main__':
     app()

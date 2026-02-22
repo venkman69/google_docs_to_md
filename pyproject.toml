@@ -1,5 +1,5 @@
 [project]
-name = "gdrive-pdf-exporter"
+name = "google_docs_to_md"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
